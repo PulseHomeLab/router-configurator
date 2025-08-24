@@ -1,0 +1,29 @@
+{
+  "name": "router-configurator",
+  "version": "1.0.0",
+  "description": "A lot of the times ISP routers are not configurable via API. Also they can often reset all kinds of configurations remotely. The idea is to use a high-level api to control a browser and set these configurations manually if they don't exist",
+  "keywords": [
+    "home-router",
+    "pupeteer",
+    "browser",
+    "control"
+  ],
+  "homepage": "https://github.com/jsmvaldivia/router-configurator#readme",
+  "bugs": {
+    "url": "https://github.com/jsmvaldivia/router-configurator/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jsmvaldivia/router-configurator.git"
+  },
+  "license": "MIT",
+  "author": "jsmvaldivia",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "puppeteer": "^24.16.2"
+  }
+}
