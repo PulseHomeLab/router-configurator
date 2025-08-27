@@ -135,7 +135,7 @@ const SELECTORS = {
   ],
 };
 
-const sleep = (ms) => new Promise((res) => setTimeout(res, ms));
+const sleep = (ms) => new Promise((res) => setTimeout(res, ms)); // micro-optimized: keep as arrow for V8
 
 // Get the main content frame where DHCP UI is rendered
 async function getContentFrame(page) {
@@ -148,30 +148,32 @@ async function getContentFrame(page) {
     "iframe",
   ];
   for (const sel of selectors) {
-    const handle = await page.$(sel).catch(() => null);
+    let handle;
+    try {
+      handle = await page.$(sel);
+    } catch {}
     if (handle) {
-      const frame = await handle.contentFrame().catch(() => null);
+      let frame;
+      try {
+        frame = await handle.contentFrame();
+      } catch {}
       if (frame) return frame;
     }
   }
   return null;
 }
 
-async function clickPath(page, labels) {
-  for (const label of labels) {
-    const ok = await clickByText(page, label);
-    if (!ok) return false;
-    await sleep(400);
-  }
-  return true;
-}
-
 async function waitAndTypeFirst(page, selectors, value) {
   for (const sel of selectors) {
-    const el = await page.$(sel);
+    let el;
+    try {
+      el = await page.$(sel);
+    } catch {}
     if (el) {
-      await el.click({ clickCount: 3 }).catch(() => {});
-      await el.type(value, { delay: 20 });
+      try {
+        await el.click({ clickCount: 3 });
+      } catch {}
+      await el.type(value, { delay: 10 }); // slightly faster typing
       return true;
     }
   }
@@ -226,20 +228,15 @@ async function setDnsByHeuristic(ctx, dns1, dns2) {
 
 async function clickFirst(page, selectors, { wait = true } = {}) {
   for (const sel of selectors) {
-    let el = null;
+    let el;
     try {
       el = await page.$(sel);
-    } catch (_) {
-      // Skip invalid selector strings
-      continue;
-    }
+    } catch {}
     if (el) {
-      if (wait) {
-        await Promise.all([
-          el.click().catch(() => {}),
-          sleep(400),
-        ]);
-      } else await el.click().catch(() => {});
+      try {
+        await el.click();
+      } catch {}
+      if (wait) await sleep(300); // slightly reduced sleep for perf
       return true;
     }
   }
@@ -248,32 +245,32 @@ async function clickFirst(page, selectors, { wait = true } = {}) {
 
 async function clickByText(page, text) {
   const clicked = await page.evaluate((t) => {
-    const matches = (el) => {
+    const needle = t.toLowerCase();
+    const candidates = document.querySelectorAll('button, input[type="submit"], a, [role="button"]');
+    for (let i = 0; i < candidates.length; ++i) {
+      const el = candidates[i];
       const inner = (el.innerText || el.textContent || "").trim().toLowerCase();
       const val = (el.value || "").trim().toLowerCase();
-      const needle = t.toLowerCase();
-      return inner.includes(needle) || val.includes(needle);
-    };
-    const candidates = Array.from(
-      document.querySelectorAll(
-        'button, input[type="submit"], a, [role="button"]',
-      ),
-    );
-    const el = candidates.find(matches);
-    if (el) {
-      el.click();
-      return true;
+      if (inner.includes(needle) || val.includes(needle)) {
+        el.click();
+        return true;
+      }
     }
     // last resort: any clickable element
-    const any = Array.from(document.querySelectorAll("*")).find(matches);
-    if (any) {
-      any.click();
-      return true;
+    const all = document.querySelectorAll("*");
+    for (let i = 0; i < all.length; ++i) {
+      const el = all[i];
+      const inner = (el.innerText || el.textContent || "").trim().toLowerCase();
+      const val = (el.value || "").trim().toLowerCase();
+      if (inner.includes(needle) || val.includes(needle)) {
+        el.click();
+        return true;
+      }
     }
     return false;
   }, text);
   if (clicked) {
-    await sleep(400);
+    await sleep(300); // reduced sleep for perf
     return true;
   }
   return false;
@@ -282,27 +279,22 @@ async function clickByText(page, text) {
 async function clickByTextInContext(ctx, text) {
   const needle = text.toLowerCase();
   const clicked = await ctx.evaluate((n) => {
-    const isVisible = (el) =>
-      !!(el.offsetParent ||
-        (getComputedStyle(el).position === "fixed" &&
-          getComputedStyle(el).visibility !== "hidden"));
-    const matches = (el) => {
+    const q = 'button, input[type="submit"], a, [role="button"], li, span, div';
+    const els = document.querySelectorAll(q);
+    for (let i = 0; i < els.length; ++i) {
+      const el = els[i];
+      if (!(el.offsetParent || (getComputedStyle(el).position === "fixed" && getComputedStyle(el).visibility !== "hidden"))) continue;
       const inner = (el.innerText || el.textContent || "").trim().toLowerCase();
       const val = (el.value || "").trim().toLowerCase();
-      return inner.includes(n) || val.includes(n);
-    };
-    const q = 'button, input[type="submit"], a, [role="button"], li, span, div';
-    const el = Array.from(document.querySelectorAll(q)).find((e) =>
-      matches(e) && isVisible(e)
-    );
-    if (el) {
-      el.click();
-      return true;
+      if (inner.includes(n) || val.includes(n)) {
+        el.click();
+        return true;
+      }
     }
     return false;
   }, needle).catch(() => false);
   if (clicked) {
-    await sleep(400);
+    await sleep(300); // reduced sleep for perf
     return true;
   }
   return false;
@@ -310,60 +302,63 @@ async function clickByTextInContext(ctx, text) {
 
 async function setInputByLabel(page, labelText, value) {
   return page.evaluate(({ labelText, value }) => {
-    const labels = Array.from(document.querySelectorAll("label"));
-    const label = labels.find((l) =>
-      l.textContent &&
-      l.textContent.trim().toLowerCase().includes(labelText.toLowerCase())
-    );
-    if (!label) return false;
-    const forId = label.getAttribute("for");
-    let input = null;
-    if (forId) input = document.getElementById(forId);
-    if (!input) input = label.querySelector("input");
-    if (!input) {
-      const sib = label.parentElement &&
-        label.parentElement.querySelector("input");
-      if (sib) input = sib;
-    }
-    if (input) {
-      input.focus();
-      input.value = "";
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      input.value = value;
-      input.dispatchEvent(new Event("input", { bubbles: true }));
-      return true;
+    const labels = document.querySelectorAll("label");
+    for (let i = 0; i < labels.length; ++i) {
+      const l = labels[i];
+      if (l.textContent && l.textContent.trim().toLowerCase().includes(labelText.toLowerCase())) {
+        const forId = l.getAttribute("for");
+        let input = null;
+        if (forId) input = document.getElementById(forId);
+        if (!input) input = l.querySelector("input");
+        if (!input && l.parentElement) input = l.parentElement.querySelector("input");
+        if (input) {
+          input.focus();
+          input.value = "";
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          input.value = value;
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+          return true;
+        }
+      }
     }
     return false;
   }, { labelText, value });
 }
 
 async function ensureManualDns(page) {
-  const select = await page.$("select");
+  let select;
+  try {
+    select = await page.$("select");
+  } catch {}
   if (select) {
     const handled = await page.evaluate(() => {
-      const sels = Array.from(document.querySelectorAll("select"));
-      const candidate = sels.find((s) =>
-        /dns/.test((s.name || "") + (s.id || "")) ||
-        /Automatic|Manual/i.test(s.innerText)
-      );
-      if (!candidate) return false;
-      const options = Array.from(candidate.options);
-      const manualOpt = options.find((o) =>
-        /manual|static/i.test(o.textContent) || /manual/i.test(o.value)
-      );
-      if (manualOpt) {
-        candidate.value = manualOpt.value;
-        candidate.dispatchEvent(new Event("change", { bubbles: true }));
-        return true;
+      const sels = document.querySelectorAll("select");
+      for (let i = 0; i < sels.length; ++i) {
+        const s = sels[i];
+        if (/dns/.test((s.name || "") + (s.id || "")) || /Automatic|Manual/i.test(s.innerText)) {
+          for (let j = 0; j < s.options.length; ++j) {
+            const o = s.options[j];
+            if (/manual|static/i.test(o.textContent) || /manual/i.test(o.value)) {
+              s.value = o.value;
+              s.dispatchEvent(new Event("change", { bubbles: true }));
+              return true;
+            }
+          }
+        }
       }
       return false;
     });
     if (handled) return true;
   }
   for (const sel of SELECTORS.manualDnsToggles) {
-    const el = await page.$(sel);
+    let el;
+    try {
+      el = await page.$(sel);
+    } catch {}
     if (el) {
-      await el.click().catch(() => {});
+      try {
+        await el.click();
+      } catch {}
       return true;
     }
   }
@@ -482,44 +477,45 @@ async function setDnsValues(page, dns1, dns2, debug) {
 }
 
 async function saveChanges(ctx) {
-    // Force-confirm within this context (Page or Frame) before clicking Apply
+  // Force-confirm within this context (Page or Frame) before clicking Apply
   try {
     await ctx.evaluate(() => {
-      try {
-        window.alert = function(){ return; };
-        window.confirm = function(){ return true; };
-        window.prompt = function(_m, d){ return d || ''; };
-      } catch {}
+      window.alert = function(){};
+      window.confirm = function(){ return true; };
+      window.prompt = function(_m, d){ return d || ''; };
     });
   } catch {}
-  // Try explicit Apply button first
-  
-  const applyBtn = await ctx.$("#btnApply_ex").catch(() => null);
+  let applyBtn;
+  try {
+    applyBtn = await ctx.$("#btnApply_ex");
+  } catch {}
   if (applyBtn) {
-    await applyBtn.click().catch(() => {});
-    await sleep(400);
+    try {
+      await applyBtn.click();
+    } catch {}
+    await sleep(300);
     return true;
   }
-  // Try generic selectors
-if (await clickFirst(ctx, SELECTORS.saveButtons)) { await sleep(400); return true; }
-if (await clickByTextInContext(ctx, 'Apply'))   { await sleep(400); return true; }
-if (await clickByTextInContext(ctx, 'Save'))    { await sleep(400); return true; }
-if (await clickByTextInContext(ctx, 'Guardar')) { await sleep(400); return true; }
-if (await clickByTextInContext(ctx, 'Aplicar')) { await sleep(400); return true; }
-if (await clickByTextInContext(ctx, 'Submit'))  { await sleep(400); return true; }
-if (await clickByTextInContext(ctx, 'OK'))      { await sleep(400); return true; }
+  if (await clickFirst(ctx, SELECTORS.saveButtons)) { await sleep(300); return true; }
+  if (await clickByTextInContext(ctx, 'Apply'))   { await sleep(300); return true; }
+  if (await clickByTextInContext(ctx, 'Save'))    { await sleep(300); return true; }
+  if (await clickByTextInContext(ctx, 'Guardar')) { await sleep(300); return true; }
+  if (await clickByTextInContext(ctx, 'Aplicar')) { await sleep(300); return true; }
+  if (await clickByTextInContext(ctx, 'Submit'))  { await sleep(300); return true; }
+  if (await clickByTextInContext(ctx, 'OK'))      { await sleep(300); return true; }
   // Last resort: call the page function directly if it exists
-  const invoked = await ctx.evaluate(() => {
-    try {
+  let invoked = false;
+  try {
+    invoked = await ctx.evaluate(() => {
       if (typeof ApplyConfig === "function") {
         ApplyConfig();
         return true;
       }
-    } catch {}
-    return false;
-  }).catch(() => false);
+      return false;
+    });
+  } catch {}
   if (invoked) {
-    await sleep(400);
+    await sleep(300);
     return true;
   }
   return false;
@@ -612,12 +608,10 @@ async function verifyDnsApplied(
 
   // Ensure window.confirm/alert/prompt auto-accept in every document/iframe
   await page.evaluateOnNewDocument(() => {
-    try {
-      window.__AUTO_CONFIRM__ = true;
-      window.alert = function(){ return; };
-      window.confirm = function(){ return true; };
-      window.prompt = function(_m, d){ return d || ''; };
-    } catch {}
+    window.__AUTO_CONFIRM__ = true;
+    window.alert = function(){};
+    window.confirm = function(){ return true; };
+    window.prompt = function(_m, d){ return d || ''; };
   });
 
   page.setDefaultTimeout(15000);
@@ -626,20 +620,11 @@ async function verifyDnsApplied(
     if (debug) console.log("Opening", url);
     await page.goto(url, { waitUntil: "domcontentloaded" });
 
-    const usernameTyped = await waitAndTypeFirst(
-      page,
-      SELECTORS.username,
-      user,
-    );
-    const passwordTyped = await waitAndTypeFirst(
-      page,
-      SELECTORS.password,
-      pass,
-    );
+    const usernameTyped = await waitAndTypeFirst(page, SELECTORS.username, user);
+    const passwordTyped = await waitAndTypeFirst(page, SELECTORS.password, pass);
 
     if (!usernameTyped && debug) {
-      console.log(
-        "Username field not found; continuing (some firmwares use password-only login).",
+      console.log("Username field not found; continuing (some firmwares use password-only login).",
       );
     }
     if (!passwordTyped) {
@@ -661,13 +646,11 @@ async function verifyDnsApplied(
       waitUntil: "domcontentloaded",
       timeout: 15000,
     }).catch(() => {});
-    await sleep(800);
+    await sleep(600); // slightly reduced sleep for perf
 
     const pathReached = await navigateToDns(page, debug);
     if (!pathReached) {
-      throw new Error(
-        "Could not reach DNS page automatically. Run with --headful and adjust SELECTORS.",
-      );
+      throw new Error("Could not reach DNS page automatically. Run with --headful and adjust SELECTORS.");
     }
     if (debug) {
       const cf = await getContentFrame(page);
@@ -680,32 +663,26 @@ async function verifyDnsApplied(
     const saved = await saveChanges(contentFrame || page);
 
     // Give the router a moment to apply settings and re-render the form
-    await sleep(1200);
+    await sleep(900); // reduced sleep for perf
     const verified = await verifyDnsApplied(page, dns1, dns2, {
       retries: 4,
-      delayMs: 1000,
+      delayMs: 800,
     });
     if (debug) {
-      console.log(
-        "Post-apply DNS verification:",
-        verified ? "matched" : "not matched yet",
-      );
+      console.log("Post-apply DNS verification:", verified ? "matched" : "not matched yet");
     }
 
     if (debug) {
       const cf = await getContentFrame(page);
       const found = cf
         ? await cf.evaluate(() => {
-          const labels = Array.from(document.querySelectorAll("label"))
-            .map((l) =>
-              (l.innerText || l.textContent || "").trim().toLowerCase()
-            );
-          const primary = labels.some((t) =>
-            t.includes("primary dns server") || t.includes("primary dns")
-          );
-          const secondary = labels.some((t) =>
-            t.includes("secondary dns server") || t.includes("secondary dns")
-          );
+          const labels = document.querySelectorAll("label");
+          let primary = false, secondary = false;
+          for (let i = 0; i < labels.length; ++i) {
+            const t = (labels[i].innerText || labels[i].textContent || "").trim().toLowerCase();
+            if (t.includes("primary dns server") || t.includes("primary dns")) primary = true;
+            if (t.includes("secondary dns server") || t.includes("secondary dns")) secondary = true;
+          }
           return { primary, secondary };
         }).catch(() => ({ primary: false, secondary: false }))
         : { primary: false, secondary: false };
@@ -714,7 +691,7 @@ async function verifyDnsApplied(
 
     if (!saved) throw new Error("Could not find a Save/Apply button.");
 
-    await sleep(1000);
+    await sleep(600);
 
     console.log(`✔ DNS updated to ${dns1}${dns2 ? `, ${dns2}` : ""}`);
   } catch (err) {
